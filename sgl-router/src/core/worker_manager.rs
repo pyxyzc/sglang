@@ -11,6 +11,7 @@ use crate::core::{
     BasicWorkerBuilder, CircuitBreakerConfig, ConnectionMode, DPAwareWorkerBuilder, HealthConfig,
     Worker, WorkerFactory, WorkerRegistry, WorkerType,
 };
+use crate::grpc_client::sglang_scheduler::SglangSchedulerClient;
 use crate::policies::PolicyRegistry;
 use crate::protocols::worker_spec::{
     FlushCacheResult, WorkerConfigRequest, WorkerLoadInfo, WorkerLoadsResult,
@@ -171,6 +172,53 @@ impl WorkerManager {
         }
 
         Ok(dp_urls)
+    }
+
+    /// Get model_id from gRPC worker via GetServerInfo
+    ///
+    /// In gRPC mode, the router handles tokenization, tool parsing, and reasoning parsing
+    /// using its own CLI configuration. The only thing we need from the worker is the
+    /// model_id (served_model_name) for routing purposes.
+    async fn get_grpc_model_id(url: &str) -> Result<String, String> {
+        // Connect to gRPC server
+        let client = SglangSchedulerClient::connect(url)
+            .await
+            .map_err(|e| format!("Failed to connect to gRPC server at {}: {}", url, e))?;
+
+        // Get server info via gRPC
+        let server_info_response = client
+            .get_server_info()
+            .await
+            .map_err(|e| format!("Failed to get server info from {}: {}", url, e))?;
+
+        // Extract server_args from the response
+        let server_args = match &server_info_response.server_args {
+            Some(args) => args,
+            None => {
+                return Err(format!(
+                    "No server_args in GetServerInfoResponse from {}",
+                    url
+                ));
+            }
+        };
+
+        // Extract served_model_name and use it directly as model_id
+        if let Some(served_model_name) = server_args
+            .fields
+            .get("served_model_name")
+            .and_then(|v| v.kind.as_ref())
+            .and_then(|k| {
+                if let prost_types::value::Kind::StringValue(s) = k {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+        {
+            Ok(served_model_name.to_string())
+        } else {
+            Err(format!("No served_model_name in server_args from {}", url))
+        }
     }
 
     /// Initialize workers from configuration at startup
@@ -440,12 +488,32 @@ impl WorkerManager {
         let mut registered_workers: HashMap<String, Vec<Arc<dyn Worker>>> = HashMap::new();
 
         for url in urls {
+            // Get model_id from gRPC server
+            let labels = match Self::get_grpc_model_id(url).await {
+                Ok(model_id) => {
+                    info!(
+                        "Retrieved model_id from gRPC server at {}: {}",
+                        url, model_id
+                    );
+                    let mut labels = HashMap::new();
+                    labels.insert("model_id".to_string(), model_id);
+                    Some(labels)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get model_id from gRPC server at {}: {}. Worker will have unknown model_id.",
+                        url, e
+                    );
+                    None
+                }
+            };
+
             let worker = Self::create_basic_worker(
                 url.clone(),
                 WorkerType::Regular,
                 connection_mode.clone(),
                 config.api_key.clone(),
-                None,
+                labels,
                 circuit_breaker_config.clone(),
                 health_config.clone(),
             );
@@ -482,6 +550,26 @@ impl WorkerManager {
         let mut registered_decode_workers: HashMap<String, Vec<Arc<dyn Worker>>> = HashMap::new();
 
         for (url, bootstrap_port) in prefill_urls {
+            // Get model_id from gRPC server
+            let labels = match Self::get_grpc_model_id(url).await {
+                Ok(model_id) => {
+                    info!(
+                        "Retrieved model_id from gRPC prefill server at {}: {}",
+                        url, model_id
+                    );
+                    let mut labels = HashMap::new();
+                    labels.insert("model_id".to_string(), model_id);
+                    Some(labels)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get model_id from gRPC prefill server at {}: {}. Worker will have unknown model_id.",
+                        url, e
+                    );
+                    None
+                }
+            };
+
             let worker_type = WorkerType::Prefill {
                 bootstrap_port: *bootstrap_port,
             };
@@ -494,7 +582,7 @@ impl WorkerManager {
                 worker_type,
                 connection_mode,
                 config.api_key.clone(),
-                None,
+                labels,
                 circuit_breaker_config.clone(),
                 health_config.clone(),
             );
@@ -512,6 +600,26 @@ impl WorkerManager {
 
         // Create decode workers
         for url in decode_urls {
+            // Get model_id from gRPC server
+            let labels = match Self::get_grpc_model_id(url).await {
+                Ok(model_id) => {
+                    info!(
+                        "Retrieved model_id from gRPC decode server at {}: {}",
+                        url, model_id
+                    );
+                    let mut labels = HashMap::new();
+                    labels.insert("model_id".to_string(), model_id);
+                    Some(labels)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to get model_id from gRPC decode server at {}: {}. Worker will have unknown model_id.",
+                        url, e
+                    );
+                    None
+                }
+            };
+
             let connection_mode = ConnectionMode::Grpc { port: None };
 
             let worker = Self::create_basic_worker(
@@ -519,7 +627,7 @@ impl WorkerManager {
                 WorkerType::Decode,
                 connection_mode,
                 config.api_key.clone(),
-                None,
+                labels,
                 circuit_breaker_config.clone(),
                 health_config.clone(),
             );
@@ -557,21 +665,56 @@ impl WorkerManager {
     ) -> Result<String, String> {
         let mut labels = config.labels.clone();
 
+        // Determine connection mode from URL
+        let connection_mode = if config.url.starts_with("grpc://") {
+            ConnectionMode::Grpc { port: None }
+        } else {
+            ConnectionMode::Http
+        };
+
+        // Query model_id from worker based on connection mode
         let model_id = if let Some(ref model_id) = config.model_id {
             model_id.clone()
         } else {
-            match Self::get_server_info(&config.url, config.api_key.as_deref()).await {
-                Ok(info) => info
-                    .model_id
-                    .or_else(|| {
-                        info.model_path
-                            .as_ref()
-                            .and_then(|path| path.split('/').next_back().map(|s| s.to_string()))
-                    })
-                    .unwrap_or_else(|| "unknown".to_string()),
-                Err(e) => {
-                    warn!("Failed to query server info from {}: {}", config.url, e);
-                    "unknown".to_string()
+            match connection_mode {
+                ConnectionMode::Grpc { .. } => {
+                    // Use gRPC client for gRPC workers
+                    match Self::get_grpc_model_id(&config.url).await {
+                        Ok(model_id) => {
+                            info!(
+                                "Retrieved model_id from gRPC worker at {}: {}",
+                                config.url, model_id
+                            );
+                            model_id
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to query gRPC server at {}: {}. Using 'unknown' as model_id.",
+                                config.url, e
+                            );
+                            "unknown".to_string()
+                        }
+                    }
+                }
+                ConnectionMode::Http => {
+                    // Use HTTP client for HTTP workers
+                    match Self::get_server_info(&config.url, config.api_key.as_deref()).await {
+                        Ok(info) => info
+                            .model_id
+                            .or_else(|| {
+                                info.model_path.as_ref().and_then(|path| {
+                                    path.split('/').next_back().map(|s| s.to_string())
+                                })
+                            })
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        Err(e) => {
+                            warn!(
+                                "Failed to query HTTP server at {}: {}. Using 'unknown' as model_id.",
+                                config.url, e
+                            );
+                            "unknown".to_string()
+                        }
+                    }
                 }
             }
         };
@@ -607,12 +750,6 @@ impl WorkerManager {
                 _ => WorkerType::Regular,
             })
             .unwrap_or(WorkerType::Regular);
-
-        let connection_mode = if config.url.starts_with("grpc://") {
-            ConnectionMode::Grpc { port: None }
-        } else {
-            ConnectionMode::Http
-        };
 
         let policy_hint = labels.get("policy").cloned();
 
