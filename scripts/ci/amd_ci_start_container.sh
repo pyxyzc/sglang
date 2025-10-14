@@ -95,6 +95,18 @@ find_latest_image() {
       *)     echo "Error: unsupported GPU architecture '${gpu_arch}'" >&2; return 1 ;;
   esac
 
+  # First, check local cache
+  for days_back in {0..6}; do
+    image_tag="${base_tag}-$(date -d "${days_back} days ago" +%Y%m%d)"
+    local local_image="rocm/sgl-dev:${image_tag}"
+    if docker images -q "${local_image}" >/dev/null 2>&1; then
+      echo "Found cached image locally: ${local_image}" >&2
+      echo "${local_image}"
+      return 0
+    fi
+  done
+
+  # If not found locally, fall back to pulling from public registry
   for days_back in {0..6}; do
     image_tag="${base_tag}-$(date -d "${days_back} days ago" +%Y%m%d)"
     echo "Checking for image: rocm/sgl-dev:${image_tag}" >&2
@@ -122,10 +134,12 @@ docker pull "${IMAGE}"
 echo "Launching container: ci_sglang"
 docker run -dt --user root --device=/dev/kfd ${DEVICE_FLAG} \
   -v "${GITHUB_WORKSPACE:-$PWD}:/sglang-checkout" \
+  -v /home/runner/sgl-data/hf-cache:/hf_home \
   --ipc=host --group-add video \
   --shm-size 32g \
   --cap-add=SYS_PTRACE \
   -e HF_TOKEN="${HF_TOKEN:-}" \
+  -e HF_HOME=/hf_home \
   --security-opt seccomp=unconfined \
   -w /sglang-checkout \
   --name ci_sglang \
