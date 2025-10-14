@@ -99,10 +99,11 @@ find_latest_image() {
   for days_back in {0..6}; do
     image_tag="${base_tag}-$(date -d "${days_back} days ago" +%Y%m%d)"
     local local_image="rocm/sgl-dev:${image_tag}"
-    if docker images -q "${local_image}" >/dev/null 2>&1; then
-      echo "Found cached image locally: ${local_image}" >&2
-      echo "${local_image}"
-      return 0
+    image_id=$(docker images -q "${local_image}")
+    if [[ -n "$image_id" ]]; then
+        echo "Found cached image locally: ${local_image}" >&2
+        echo "${local_image}"
+        return 0
     fi
   done
 
