@@ -802,6 +802,8 @@ class Scheduler(
                     eviction_policy=server_args.radix_eviction_policy,
                     is_eagle=self.spec_algorithm.is_eagle(),
                 )
+
+                self.connector = self.tree_cache.connector
             else:
                 self.tree_cache = RadixCache(
                     req_to_token_pool=self.req_to_token_pool,
@@ -1648,6 +1650,8 @@ class Scheduler(
         )
 
     def get_next_batch_to_run(self) -> Optional[ScheduleBatch]:
+        self.connector.handle_dump_tasks()
+
         # Merge the prefill batch into the running batch
         chunked_req_to_exclude = set()
         if self.chunked_req:
@@ -1888,6 +1892,8 @@ class Scheduler(
             )
 
         new_batch.prepare_for_extend()
+
+        self.connector.build_connector_metadata(new_batch)
 
         # Mixed-style chunked prefill
         if (
