@@ -431,6 +431,9 @@ class ServerArgs:
     hicache_storage_backend_extra_config: Optional[str] = None
     # LMCache
     enable_lmcache: bool = False
+    # UnifiedCache
+    enable_unifiedcache: bool = False
+    kv_transfer_config: Optional[str] = None
 
     # Ktransformers
     kt_amx_weight_path: Optional[str] = None
@@ -3041,7 +3044,19 @@ class ServerArgs:
             action="store_true",
             help="Using LMCache as an alternative hierarchical cache solution",
         )
-
+        # UnifiedCache
+        parser.add_argument(
+            "--enable-unifiedcache",
+            action="store_true",
+            help="Using UnifiedCache as an alternative hierarchical cache solution",
+        )
+        parser.add_argument(
+            "--kv-transfer-config",
+            type=str,
+            default=ServerArgs.kv_transfer_config,
+            help="A dictionary in JSON string format containing configuration for UCM KV cache transfer.",
+        )
+        
         # Ktransformer server args
         parser.add_argument(
             "--kt-amx-weight-path",
