@@ -22,6 +22,10 @@ from torch import nn
 
 from sglang.srt.compilation.piecewise_context_manager import get_forward_context
 from sglang.srt.utils import direct_register_custom_op
+from sglang.srt.mem_cache.storage.unifiedcache.uc_state import (
+    has_uc_connector,
+    get_uc_connector,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.quantization.base_config import QuantizationConfig
@@ -109,14 +113,21 @@ class RadixAttention(nn.Module):
             else:
                 k = k.view(-1, self.tp_k_head_num, self.v_head_dim)
 
+        def submit(layer_id: int):
+            if has_uc_connector():
+                connector = get_uc_connector()
+                if connector is not None:
+                    connector.submit_dump_tasks(layer_id)
+
         if forward_batch.forward_mode.is_extend() and get_forward_context() is not None:
             output = torch.empty_like(q)
             torch.ops.sglang.unified_attention_with_output(
                 q, k, v, output, save_kv_cache, self.layer_id
             )
+            submit(self.layer_id)
             return output
         else:
-            return forward_batch.attn_backend.forward(
+            output = forward_batch.attn_backend.forward(
                 q,
                 k,
                 v,
@@ -125,6 +136,8 @@ class RadixAttention(nn.Module):
                 save_kv_cache,
                 **kwargs,
             )
+            submit(self.layer_id)
+            return output
 
 
 def unified_attention_with_output(
