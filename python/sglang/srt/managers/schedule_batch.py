@@ -734,7 +734,7 @@ class Req:
                 **(
                     {"req": self, "cow_mamba": True}
                     if isinstance(tree_cache, MambaRadixCache)
-                    else {}
+                    else {"req_id": self.rid}
                 ),
             )
             self.last_matched_prefix_len = len(self.prefix_indices)

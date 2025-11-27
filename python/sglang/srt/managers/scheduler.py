@@ -782,6 +782,26 @@ class Scheduler(
                     tp_group=self.tp_group,
                     eviction_policy=server_args.radix_eviction_policy,
                 )
+            elif server_args.enable_unifiedcache:
+                from sglang.srt.mem_cache.storage.unifiedcache.uc_radix_cache import (
+                    UCRadixCache,
+                )
+
+                self.tree_cache = UCRadixCache(
+                    req_to_token_pool=self.req_to_token_pool,
+                    token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+                    page_size=self.page_size,
+                    disable=server_args.disable_radix_cache,
+                    enable_kv_cache_events=self.enable_kv_cache_events,
+                    kv_transfer_config=server_args.kv_transfer_config,
+                    model_config=self.model_config,
+                    tp_size=self.tp_size,
+                    rank=self.tp_rank,
+                    tp_group=self.tp_group,
+                    is_mla = self.tp_worker.model_runner.use_mla_backend,
+                    eviction_policy=server_args.radix_eviction_policy,
+                    is_eagle=self.spec_algorithm.is_eagle(),
+                )
             else:
                 self.tree_cache = RadixCache(
                     req_to_token_pool=self.req_to_token_pool,
