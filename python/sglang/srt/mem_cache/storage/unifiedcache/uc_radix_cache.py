@@ -10,6 +10,7 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import MatchResult
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey, TreeNode
+from sglang.srt.mem_cache.storage.unifiedcache.uc_state import set_uc_connector
 
 try:
     from ucm.integration.sglang.uc_connector import UnifiedCacheConnector, UnifiedCacheConfig, EnvironmentConfig
@@ -108,6 +109,7 @@ class UCRadixCache(RadixCache):
             unifiedCacheConfig=uc_config,
             environmentConfig=env_config,
         )
+        set_uc_connector(self.uc_connector)
 
         self.load_stream = torch.cuda.Stream()
         self.store_stream = torch.cuda.Stream()
