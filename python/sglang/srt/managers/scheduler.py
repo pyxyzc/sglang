@@ -797,13 +797,13 @@ class Scheduler(
                     model_config=self.model_config,
                     tp_size=self.tp_size,
                     rank=self.tp_rank,
-                    tp_group=self.tp_group,
+                    tp_group=self.tp_group.device_group,
                     is_mla = self.tp_worker.model_runner.use_mla_backend,
                     eviction_policy=server_args.radix_eviction_policy,
                     is_eagle=self.spec_algorithm.is_eagle(),
                 )
 
-                self.connector = self.tree_cache.connector
+                self.connector = self.tree_cache.uc_connector
             else:
                 self.tree_cache = RadixCache(
                     req_to_token_pool=self.req_to_token_pool,
