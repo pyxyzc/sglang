@@ -1650,7 +1650,8 @@ class Scheduler(
         )
 
     def get_next_batch_to_run(self) -> Optional[ScheduleBatch]:
-        self.connector.handle_dump_tasks()
+        if self.server_args.enable_unifiedcache:
+            self.connector.handle_dump_tasks()
 
         # Merge the prefill batch into the running batch
         chunked_req_to_exclude = set()
