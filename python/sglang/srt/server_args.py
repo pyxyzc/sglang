@@ -1332,6 +1332,9 @@ class ServerArgs:
     def _handle_page_size(self):
         if self.page_size is None:
             self.page_size = 1
+        # Unified cache only supports page size 128
+        if self.enable_unifiedcache:
+            self.page_size = 128
 
     def _handle_amd_specifics(self):
         if is_hip():
