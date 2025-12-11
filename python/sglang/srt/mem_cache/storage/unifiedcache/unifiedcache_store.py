@@ -17,6 +17,9 @@ from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
 
+EXIST_FLAG_STR = "EXIST"
+EXIST_FLAG = -1
+
 
 @dataclass
 class UnifiedCacheStoreConfig:
@@ -75,6 +78,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.mem_pool_host = mem_pool_host
 
             self.is_mla = storage_config.is_mla_model
+            self.cache_nums = 1 if self.is_mla else 2
             self.tp_rank = storage_config.tp_rank
             self.tp_size = storage_config.tp_size
         except ValueError as e:
@@ -87,6 +91,87 @@ class UnifiedCacheStore(HiCacheStorage):
     def register_mem_pool_host(self, mem_pool_host: HostKVCache):
         super().register_mem_pool_host(mem_pool_host)
 
+    def _get_page_keys(self, keys: List[str]) -> List[str]:
+        return [key for key in keys for _ in range(self.cache_nums)]
+
+    def _get_page_offsets(self, keys: List[str], elem_size: int) -> List[int]:
+        if self.is_mla:
+            return [0] * len(keys)
+
+        offset_list: List[int] = []
+        v_offset = self.tp_size * elem_size
+        for _ in keys:
+            offset_list.append(self.tp_rank * elem_size)
+            offset_list.append(self.tp_rank * elem_size + v_offset)
+
+        return offset_list
+
+    def _build_transfer_data(
+        self, keys: List[str], host_indices: torch.Tensor, is_set: bool
+    ) -> Tuple[List[str], List[int], List[int], List[int]]:
+        ptr_list, elem_size_list = self.mem_pool_host.get_page_buffer_meta(host_indices)
+        elem_size = elem_size_list[0]
+
+        key_list = self._get_page_keys(keys)
+        offset_list = self._get_page_offsets(keys, elem_size)
+
+        assert len(key_list) == len(ptr_list), (
+            f"Key/Ptr list mismatch: {len(key_list)} vs {len(ptr_list)}"
+        )
+        assert len(offset_list) == len(ptr_list), (
+            f"Offset/Ptr list mismatch: {len(offset_list)} vs {len(ptr_list)}"
+        )
+        if self.is_mla:
+            assert len(key_list) == len(keys), (
+                f"MLA: Keys/Key list mismatch: {len(keys)} vs {len(key_list)}"
+            )
+
+        if not is_set:
+            return key_list, offset_list, ptr_list, elem_size
+
+        lookup_results = self.store.lookup(keys)
+
+        set_key_list: List[str] = []
+        set_offset_list: List[int] = []
+        set_ptr_list: List[int] = []
+        set_elem_size_list: List[int] = []
+
+        for i in range(len(keys)):
+            if lookup_results[i] != 1:
+                if self.is_mla:
+                    set_key_list.append(key_list[i])
+                    set_offset_list.append(offset_list[i])
+                    set_ptr_list.append(ptr_list[i])
+                    set_elem_size_list.append(elem_size_list[i])
+                else:
+                    for k in range(self.cache_nums):
+                        set_key_list.append(key_list[2 * i + k])
+                        set_offset_list.append(offset_list[2 * i + k])
+                        set_ptr_list.append(ptr_list[2 * i + k])
+                        set_elem_size_list.append(elem_size_list[2 * i + k])
+            else:
+                for _ in range(self.cache_nums):
+                    set_key_list.append(EXIST_FLAG_STR)
+                    set_offset_list.append(EXIST_FLAG)
+                    set_ptr_list.append(EXIST_FLAG)
+                    set_elem_size_list.append(EXIST_FLAG)
+
+        return set_key_list, set_offset_list, set_ptr_list, set_elem_size_list
+
+    def _batch_wait(self, tasks: List[Task]) -> List[bool]:
+        if self.is_mla:
+            return [self.store.wait(task) == 0 for task in tasks]
+
+        success_flags = []
+        for i in range(0, len(tasks), 2):
+            k_task = tasks[i]
+            v_task = tasks[i + 1]
+
+            success = self.store.wait(k_task) == 0 and self.store.wait(v_task) == 0
+
+            success_flags.append(success)
+        return success_flags
+
     def batch_get_v1(
         self,
         keys: List[str],
@@ -97,7 +182,29 @@ class UnifiedCacheStore(HiCacheStorage):
         Retrieve values for multiple keys.
         Returns a list of tensors or None for each key.
         """
-        pass
+        key_list, offset_list, ptr_list, elem_size_list = self._build_transfer_data(
+            keys, host_indices, is_set=False
+        )
+        tasks = []
+        for i in range(len(key_list)):
+            tasks.append(
+                self.store.fetch_data(
+                    [key_list[i]], [offset_list[i]], [ptr_list[i]], [elem_size_list[i]]
+                )
+            )
+
+        return self._batch_wait(tasks)
+
+    def _get_dump_list(self, dump_key_list: List[str]) -> List[str]:
+        if self.is_mla:
+            return dump_key_list
+
+        half_dump_len = len(dump_key_list) // 2
+        for i in range(half_dump_len):
+            assert dump_key_list[2 * i] == dump_key_list[2 * i + 1], (
+                "dump key list generation error"
+            )
+        return [dump_key_list[2 * i] for i in range(half_dump_len)]
 
     def batch_set_v1(
         self,
@@ -109,7 +216,28 @@ class UnifiedCacheStore(HiCacheStorage):
         Retrieve values for multiple keys.
         Returns a list of tensors or None for each key.
         """
-        pass
+        key_list, offset_list, ptr_list, elem_size_list = self._build_transfer_data(
+            keys, host_indices, is_set=True
+        )
+
+        dump_key_list = []
+        tasks = []
+        for i in range(len(key_list)):
+            if key_list[i] != EXIST_FLAG_STR:
+                dump_key_list.append(key_list[i])
+                tasks.append(
+                    self.store.dump_data(
+                        [key_list[i]],
+                        [offset_list[i]],
+                        [ptr_list[i]],
+                        [elem_size_list[i]],
+                    )
+                )
+
+        dump_key_list = self._get_dump_list(dump_key_list)
+        success_flags = self._batch_wait(tasks)
+
+        return success_flags
 
     def get(
         self,
@@ -169,13 +297,20 @@ class UnifiedCacheStore(HiCacheStorage):
         exist_result = self.store.lookup([key])
         return exist_result[0] == 1
 
-    def batch_exists(self, keys: List[str]) -> int:
+    def batch_exists(
+        self, keys: List[str], extra_info: Optional[HiCacheStorageExtraInfo] = None
+    ) -> int:
         """
         Check if the keys exist in the storage.
         return the number of consecutive existing keys from the start.
         Can be overridden by subclasses for more efficient implementation.
         """
-        pass
+        lookup_results = self.store.lookup(keys)
+        for i in range(len(lookup_results)):
+            if not lookup_results[i]:
+                return i
+
+        return len(lookup_results)
 
     def clear(self) -> None:
         pass
