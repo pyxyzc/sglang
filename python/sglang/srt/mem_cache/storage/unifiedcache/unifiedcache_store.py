@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from abc import ABC
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -17,8 +18,34 @@ from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
 
+UCM_META_BYTES: bytes | None = None
+UCM_SEED_HASH = "UCM_HASH_SEED"
+
 EXIST_FLAG_STR = "EXIST"
 EXIST_FLAG = -1
+
+
+def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
+    if UCM_META_BYTES is None:
+        raise RuntimeError(
+            "UCM_SEED_HASH is None, do not use uc_get_hash_str before register_uc_hasher"
+        )
+
+    hasher = hashlib.md5()
+    hasher.update(UCM_META_BYTES)
+
+    if prior_hash is None:
+        prior_hash = UCM_SEED_HASH
+    hasher.update(prior_hash.encode("utf-8"))
+
+    for t in token_ids:
+        if isinstance(t, tuple):
+            for elem in t:
+                hasher.update(elem.to_bytes(4, byteorder="little", signed=False))
+        else:
+            hasher.update(t.to_bytes(4, byteorder="little", signed=False))
+
+    return hasher.hexdigest()
 
 
 @dataclass
@@ -76,17 +103,26 @@ class UnifiedCacheStore(HiCacheStorage):
                 ucm_store_config.name, ucm_store_config.config
             )
             self.mem_pool_host = mem_pool_host
+            self.dtype = mem_pool_host.dtype
 
             self.is_mla = storage_config.is_mla_model
             self.cache_nums = 1 if self.is_mla else 2
             self.tp_rank = storage_config.tp_rank
             self.tp_size = storage_config.tp_size
+
+            self.register_uc_hasher()
         except ValueError as e:
             logger.error(f"Invalid UnifiedCacheStoreConfig: {e}")
             raise
         except Exception:
             logger.error(f"Unexpected error while loading UnifiedCacheStoreConfig")
             raise
+
+    def register_uc_hasher(self):
+        global UCM_META_BYTES
+
+        meta = f"{self.tp_size}:{self.dtype}:{self.tp_rank}"
+        UCM_META_BYTES = meta.encode("utf-8")
 
     def register_mem_pool_host(self, mem_pool_host: HostKVCache):
         super().register_mem_pool_host(mem_pool_host)
