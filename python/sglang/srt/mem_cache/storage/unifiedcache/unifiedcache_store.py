@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from ucm.store.factory import UcmConnectorFactory
+from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore import Task
 
 from sglang.srt.mem_cache.hicache_storage import (
@@ -56,9 +56,10 @@ class BatchMeta:
 
 @dataclass
 class UnifiedCacheStoreConfig:
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, k_config: Dict[str, Any], v_config: Dict[str, Any] = None):
         self.name = name
-        self.config = config
+        self.k_config = k_config
+        self.v_config = v_config
 
     @staticmethod
     def load_from_config(
@@ -74,22 +75,57 @@ class UnifiedCacheStoreConfig:
         is_mla_model = storage_config.is_mla_model
         tp_size = storage_config.tp_size
         tp_rank = storage_config.tp_rank
+        engine_id = str(tp_rank)
 
         page_size = mem_pool_host.page_size
         element_size = mem_pool_host.get_size_per_token()
         layer_num = mem_pool_host.device_pool.layer_num
-
+        cfg_base = page_size * element_size
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
+        if ucm_cfg is None:
+            raise ValueError("extra_config['ucm_connector_config'] is missing")
 
-        cfg = dict(ucm_cfg)
-        cfg["device"] = tp_rank
-        cfg["role"] = "worker"
-        cfg_base = page_size * element_size
-        cfg["kv_block_size"] = cfg_base * (1 if is_mla_model else tp_size)
-        cfg["io_size"] = cfg_base // layer_num
+        raw_backends = ucm_cfg.get("storage_backends")
+        if isinstance(raw_backends, str):
+            storage_backends = [p for p in raw_backends.split(":") if p]
+        elif isinstance(raw_backends, (list, tuple)):
+            storage_backends = list(raw_backends)
+        else:
+            raise ValueError("ucm_connector_config.storage_backends must be str or list")
 
-        return UnifiedCacheStoreConfig(name=name, config=cfg)
+        if not storage_backends:
+            raise ValueError("No storage_backends configured")
+
+        k_storage_backends = [os.path.join(p, "k") for p in storage_backends]
+        v_storage_backends = [os.path.join(p, "v") for p in storage_backends]
+        os.makedirs(k_storage_backends[0], exist_ok=True)
+        os.makedirs(v_storage_backends[0], exist_ok=True)
+
+        logger.info(
+            f"Created subdirectories: {k_storage_backends}, {v_storage_backends}"
+        )
+        
+        base_cfg = dict(ucm_cfg)
+        base_cfg["device"] = tp_rank
+        base_cfg["role"] = "worker"
+        base_cfg["kv_block_size"] = cfg_base * (1 if is_mla_model else tp_size)
+        base_cfg["io_size"] = cfg_base // layer_num
+
+        # k_config
+        k_config = dict(base_cfg)
+        k_config["storage_backends"] = k_storage_backends
+        k_config["unique_id"] = engine_id + "k"
+
+        # v_config
+        v_config = None
+        if not is_mla_model:
+            v_config = dict(base_cfg)
+            v_config["storage_backends"] = v_storage_backends
+            v_config["unique_id"] = engine_id + "v"
+
+
+        return UnifiedCacheStoreConfig(name=name, k_config=k_config, v_config=v_config)
 
 
 class UnifiedCacheStore(HiCacheStorage):
@@ -105,9 +141,13 @@ class UnifiedCacheStore(HiCacheStorage):
                 storage_config, mem_pool_host
             )
 
-            self.store = UcmConnectorFactory.create_connector(
-                ucm_store_config.name, ucm_store_config.config
+            self.k_store = UcmConnectorFactoryV1.create_connector(
+                ucm_store_config.name, ucm_store_config.k_config
             )
+            if ucm_store_config.v_config is not None:
+                self.v_store = UcmConnectorFactoryV1.create_connector(
+                    ucm_store_config.name, ucm_store_config.v_config
+                )
             self.mem_pool_host = mem_pool_host
             self.dtype = mem_pool_host.dtype
 
