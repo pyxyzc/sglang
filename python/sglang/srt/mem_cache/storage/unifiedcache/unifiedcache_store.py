@@ -1,9 +1,7 @@
 import logging
 import hashlib
-from abc import ABC
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from ucm.store.factory import UcmConnectorFactory
@@ -151,19 +149,19 @@ class UnifiedCacheStore(HiCacheStorage):
         key_list = self._get_page_keys(keys)
         offset_list = self._get_page_offsets(keys, elem_size)
 
-        assert len(key_list) == len(ptr_list), (
-            f"Key/Ptr list mismatch: {len(key_list)} vs {len(ptr_list)}"
-        )
-        assert len(offset_list) == len(ptr_list), (
-            f"Offset/Ptr list mismatch: {len(offset_list)} vs {len(ptr_list)}"
-        )
+        assert len(key_list) == len(
+            ptr_list
+        ), f"Key/Ptr list mismatch: {len(key_list)} vs {len(ptr_list)}"
+        assert len(offset_list) == len(
+            ptr_list
+        ), f"Offset/Ptr list mismatch: {len(offset_list)} vs {len(ptr_list)}"
         if self.is_mla:
-            assert len(key_list) == len(keys), (
-                f"MLA: Keys/Key list mismatch: {len(keys)} vs {len(key_list)}"
-            )
+            assert len(key_list) == len(
+                keys
+            ), f"MLA: Keys/Key list mismatch: {len(keys)} vs {len(key_list)}"
 
         if not is_set:
-            return key_list, offset_list, ptr_list, elem_size
+            return key_list, offset_list, ptr_list, elem_size_list
 
         lookup_results = self.store.lookup(keys)
 
@@ -237,9 +235,9 @@ class UnifiedCacheStore(HiCacheStorage):
 
         half_dump_len = len(dump_key_list) // 2
         for i in range(half_dump_len):
-            assert dump_key_list[2 * i] == dump_key_list[2 * i + 1], (
-                "dump key list generation error"
-            )
+            assert (
+                dump_key_list[2 * i] == dump_key_list[2 * i + 1]
+            ), "dump key list generation error"
         return [dump_key_list[2 * i] for i in range(half_dump_len)]
 
     def batch_set_v1(
@@ -261,6 +259,7 @@ class UnifiedCacheStore(HiCacheStorage):
         for i in range(len(key_list)):
             if key_list[i] != EXIST_FLAG_STR:
                 dump_key_list.append(key_list[i])
+                self.store.create([key_list[i]])
                 tasks.append(
                     self.store.dump_data(
                         [key_list[i]],
@@ -272,6 +271,7 @@ class UnifiedCacheStore(HiCacheStorage):
 
         dump_key_list = self._get_dump_list(dump_key_list)
         success_flags = self._batch_wait(tasks)
+        self.store.commit(dump_key_list)
 
         return success_flags
 
