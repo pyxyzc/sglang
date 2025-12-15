@@ -1,6 +1,7 @@
 import logging
 import hashlib
 from dataclasses import dataclass
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -75,7 +76,7 @@ class UnifiedCacheStoreConfig:
         is_mla_model = storage_config.is_mla_model
         tp_size = storage_config.tp_size
         tp_rank = storage_config.tp_rank
-        engine_id = str(tp_rank)
+        engine_id = "SGLang"
 
         page_size = mem_pool_host.page_size
         element_size = mem_pool_host.get_size_per_token()
@@ -111,18 +112,18 @@ class UnifiedCacheStoreConfig:
         base_cfg["role"] = "worker"
         base_cfg["kv_block_size"] = cfg_base * (1 if is_mla_model else tp_size)
         base_cfg["io_size"] = cfg_base // layer_num
-
+        base_cfg["local_rank_size"] = tp_size if is_mla_model else 1
         # k_config
         k_config = dict(base_cfg)
-        k_config["storage_backends"] = k_storage_backends
-        k_config["unique_id"] = engine_id + "k"
+        k_config["storage_backends"] = ":".join(k_storage_backends)
+        k_config["unique_id"] = engine_id
 
         # v_config
         v_config = None
         if not is_mla_model:
             v_config = dict(base_cfg)
-            v_config["storage_backends"] = v_storage_backends
-            v_config["unique_id"] = engine_id + "v"
+            v_config["storage_backends"] = ":".join(v_storage_backends)
+            v_config["unique_id"] = engine_id
 
 
         return UnifiedCacheStoreConfig(name=name, k_config=k_config, v_config=v_config)
