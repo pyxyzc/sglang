@@ -223,8 +223,8 @@ class UnifiedCacheStore(HiCacheStorage):
         else:
             k_meta, v_meta = self._generate_task(keys, host_indices)
 
-        result = self.store.create(keys) == 0
-        if all(result) == False:
+        result = self.store.create(keys)
+        if any(result) == True:
             return [False] * len(keys)
 
         task: Task | None = None
