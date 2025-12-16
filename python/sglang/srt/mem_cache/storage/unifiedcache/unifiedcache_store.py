@@ -34,6 +34,7 @@ def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
 
     if prior_hash is None:
         prior_hash = UCM_SEED_HASH
+        print("we set prior_hash to UCM_SEED_HASH")
     hasher.update(prior_hash.encode("utf-8"))
 
     for t in token_ids:
@@ -190,7 +191,7 @@ class UnifiedCacheStore(HiCacheStorage):
         task: Task | None = None
 
         if self.is_mla:
-            task = self.store, fetch_data(
+            task = self.store.fetch_data(
                 k_meta.keys,
                 k_meta.offsets,
                 k_meta.ptrs,
@@ -222,14 +223,14 @@ class UnifiedCacheStore(HiCacheStorage):
         else:
             k_meta, v_meta = self._generate_task(keys, host_indices)
 
-        result = self.store.create(keys)
+        result = self.store.create(keys) == 0
         if all(result) == False:
             return [False] * len(keys)
 
         task: Task | None = None
 
         if self.is_mla:
-            task = self.store, dump_data(
+            task = self.store.dump_data(
                 k_meta.keys,
                 k_meta.offsets,
                 k_meta.ptrs,
