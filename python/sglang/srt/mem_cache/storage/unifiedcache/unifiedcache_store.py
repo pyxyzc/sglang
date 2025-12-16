@@ -222,7 +222,10 @@ class UnifiedCacheStore(HiCacheStorage):
         else:
             k_meta, v_meta = self._generate_task(keys, host_indices)
 
-        self.store.create(keys)
+        result = self.store.create(keys)
+        if all(result) == False:
+            return [False] * len(keys)
+
         task: Task | None = None
 
         if self.is_mla:
