@@ -269,8 +269,10 @@ class HiCacheController:
             self.storage_backend_type = storage_backend
             from sglang.srt.mem_cache.hicache_storage import get_hash_str
             from sglang.srt.mem_cache.storage.unifiedcache.unifiedcache_store import uc_get_hash_str
-
-            self.get_hash_str = uc_get_hash_str
+            if self.storage_backend_type in ["unifiedcache"]:
+                self.get_hash_str = uc_get_hash_str
+            else:
+                self.get_hash_str = get_hash_str
             self.storage_config = self._generate_storage_config(
                 model_name, storage_backend_extra_config
             )

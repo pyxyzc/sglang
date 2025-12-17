@@ -1,6 +1,8 @@
 import logging
 import hashlib
 from dataclasses import dataclass
+import os
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -34,7 +36,6 @@ def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
 
     if prior_hash is None:
         prior_hash = UCM_SEED_HASH
-        print("we set prior_hash to UCM_SEED_HASH")
     hasher.update(prior_hash.encode("utf-8"))
 
     for t in token_ids:
@@ -116,6 +117,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.cache_nums = 1 if self.is_mla else 2
             self.tp_rank = storage_config.tp_rank
             self.tp_size = storage_config.tp_size
+            self.storage_backend = ucm_store_config.config["storage_backends"]
 
             self.register_uc_hasher()
         except ValueError as e:
@@ -322,7 +324,23 @@ class UnifiedCacheStore(HiCacheStorage):
         return len(lookup_results)
 
     def clear(self) -> None:
-        pass
+        try:
+            data_dir = os.path.join(self.storage_backend, "data")
+            if not os.path.isdir(data_dir):
+                return True
+
+            for name in os.listdir(data_dir):
+                path = os.path.join(data_dir, name)
+                if os.path.isfile(path) or os.path.islink(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
+
+            logger.info("Cleared all entries in UnifiedCache storage.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear UnifiedCache storage: {e}")
+            return False
 
     def get_stats(self):
         return None
