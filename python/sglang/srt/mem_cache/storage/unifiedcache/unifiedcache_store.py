@@ -2,10 +2,12 @@ import logging
 import hashlib
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import yaml
 from ucm.store.factory import UcmConnectorFactory
 from ucm.store.ucmstore import Task
 
@@ -47,6 +49,24 @@ def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
 
     return hasher.hexdigest()
 
+def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
+
+    cfg_path = os.environ.get("UNIFIEDCACHE_CONFIG_FILE")
+    if not cfg_path:
+        return None
+
+    p = Path(cfg_path)
+    if not p.is_file():
+        return None
+
+    with p.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"UNIFIEDCACHE_CONFIG_FILE YAML root must be a dict, got {type(data)}"
+        )
+    return data
 
 @dataclass
 class BatchMeta:
@@ -68,7 +88,13 @@ class UnifiedCacheStoreConfig:
     ) -> "UnifiedCacheStoreConfig":
         extra = getattr(storage_config, "extra_config", None)
         if extra is None:
-            raise ValueError("storage_config.extra_config is missing")
+            extra = _load_extra_config_from_yaml_env()
+
+        if extra is None:
+            raise ValueError(
+                "storage_config.extra_config is missing, and UNIFIEDCACHE_CONFIG_FILE not provided or file not found"
+            )
+
         kvc = extra.get("kv_connector_extra_config")
         if kvc is None:
             raise ValueError("extra_config['kv_connector_extra_config'] is missing")
@@ -83,6 +109,11 @@ class UnifiedCacheStoreConfig:
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
+
+        if ucm_cfg is None:
+            raise ValueError("kv_connector_extra_config['ucm_connector_config'] is missing")
+        if name is None:
+            raise ValueError("kv_connector_extra_config['ucm_connector_name'] is missing")
 
         cfg = dict(ucm_cfg)
         cfg["device"] = tp_rank
@@ -324,6 +355,8 @@ class UnifiedCacheStore(HiCacheStorage):
         return len(lookup_results)
 
     def clear(self) -> None:
+        if self.tp_rank != 0:
+            return
         try:
             data_dir = os.path.join(self.storage_backend, "data")
             if not os.path.isdir(data_dir):
