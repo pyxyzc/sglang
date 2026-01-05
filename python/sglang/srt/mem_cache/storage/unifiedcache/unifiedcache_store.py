@@ -16,6 +16,7 @@ from sglang.srt.mem_cache.hicache_storage import (
     HiCacheStorageConfig,
     HiCacheStorageExtraInfo,
 )
+from sglang.srt.distributed.parallel_state import get_world_group
 from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ class UnifiedCacheStoreConfig:
             raise ValueError("kv_connector_extra_config['ucm_connector_name'] is missing")
 
         cfg = dict(ucm_cfg)
-        cfg["device"] = tp_rank
+        cfg["device"] = get_world_group().local_rank
         cfg["role"] = "worker"
         cfg_base = page_size * element_size
         cfg["kv_block_size"] = cfg_base * (1 if is_mla_model else tp_size)
