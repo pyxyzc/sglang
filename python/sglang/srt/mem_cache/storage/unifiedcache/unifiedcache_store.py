@@ -1,5 +1,5 @@
 import logging
-import hashlib
+import xxhash
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -24,17 +24,13 @@ logger = logging.getLogger(__name__)
 UCM_META_BYTES: bytes | None = None
 UCM_SEED_HASH = "UCM_HASH_SEED"
 
-EXIST_FLAG_STR = "EXIST"
-EXIST_FLAG = -1
-
-
 def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
     if UCM_META_BYTES is None:
         raise RuntimeError(
             "UCM_SEED_HASH is None, do not use uc_get_hash_str before register_uc_hasher"
         )
 
-    hasher = hashlib.md5()
+    hasher = xxhash.xxh64()
     hasher.update(UCM_META_BYTES)
 
     if prior_hash is None:
@@ -102,7 +98,6 @@ class UnifiedCacheStoreConfig:
 
         is_mla_model = storage_config.is_mla_model
         tp_size = storage_config.tp_size
-        tp_rank = storage_config.tp_rank
 
         page_size = mem_pool_host.page_size
         element_size = mem_pool_host.get_size_per_token()
