@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import yaml
-from ucm.store.factory import UcmConnectorFactory
-from ucm.store.ucmstore import Task
+from ucm.store.factory_v1 import UcmConnectorFactoryV1
+from ucm.store.ucmstore_v1 import Task
 
 from sglang.srt.mem_cache.hicache_storage import (
     HiCacheStorage,
@@ -97,14 +97,27 @@ class UnifiedCacheStoreConfig:
             raise ValueError("extra_config['kv_connector_extra_config'] is missing")
 
         is_mla_model = storage_config.is_mla_model
-        tp_size = storage_config.tp_size
 
         page_size = mem_pool_host.page_size
+        #    self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2 for MHA, 
+        # or self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize     for MLA.
         element_size = mem_pool_host.get_size_per_token()
         layer_num = mem_pool_host.device_pool.layer_num
+        # cfg_base is bytes for one page across all layers (and K+V for MHA).
+        cfg_base = page_size * element_size
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
+
+        # tensor_size: per-layer, per-page bytes for a single K tensor (MHA) or
+        #             the single MLA tensor.
+        #    page_size * self.head_dim * self.head_num * self.dtype.itemsize * 2 for MHA, 
+        # or page_size * self.head_dim * self.head_num * self.dtype.itemsize     for MLA.
+        per_layer_page_bytes = cfg_base // layer_num
+        # page_size * self.head_dim * self.head_num * self.dtype.itemsize
+        tensor_size = per_layer_page_bytes if is_mla_model else per_layer_page_bytes // 2
+        # block_size/shard_size: bytes for a full block across all layers.
+        block_size = tensor_size * layer_num * (1 if is_mla_model else 2)
 
         if ucm_cfg is None:
             raise ValueError("kv_connector_extra_config['ucm_connector_config'] is missing")
@@ -112,11 +125,13 @@ class UnifiedCacheStoreConfig:
             raise ValueError("kv_connector_extra_config['ucm_connector_name'] is missing")
 
         cfg = dict(ucm_cfg)
-        cfg["device"] = get_world_group().local_rank
-        cfg["role"] = "worker"
-        cfg_base = page_size * element_size
-        cfg["kv_block_size"] = cfg_base * (1 if is_mla_model else tp_size)
-        cfg["io_size"] = cfg_base // layer_num
+        cfg["storage_backends"] = [
+            path for path in cfg["storage_backends"].split(":") if path
+        ]
+        cfg["device_id"] = get_world_group().local_rank
+        cfg["tensor_size"] = tensor_size
+        cfg["shard_size"] = block_size
+        cfg["block_size"] = block_size
 
         return UnifiedCacheStoreConfig(name=name, config=cfg)
 
@@ -134,7 +149,7 @@ class UnifiedCacheStore(HiCacheStorage):
                 storage_config, mem_pool_host
             )
 
-            self.store = UcmConnectorFactory.create_connector(
+            self.store = UcmConnectorFactoryV1.create_connector(
                 ucm_store_config.name, ucm_store_config.config
             )
             self.mem_pool_host = mem_pool_host
@@ -145,7 +160,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.tp_rank = storage_config.tp_rank
             self.tp_size = storage_config.tp_size
             self.storage_backend = ucm_store_config.config["storage_backends"]
-
+            self.model = storage_config.model_name
             self.register_uc_hasher()
         except ValueError as e:
             logger.error(f"Invalid UnifiedCacheStoreConfig: {e}")
