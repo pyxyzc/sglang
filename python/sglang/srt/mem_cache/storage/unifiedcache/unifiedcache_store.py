@@ -1,3 +1,4 @@
+import numpy as np
 import logging
 import xxhash
 from dataclasses import dataclass
@@ -303,12 +304,14 @@ class UnifiedCacheStore(HiCacheStorage):
         return the number of consecutive existing keys from the start.
         Can be overridden by subclasses for more efficient implementation.
         """
-        lookup_results = self.store.lookup(self._encode_keys(keys))
-        for i in range(len(lookup_results)):
-            if not lookup_results[i]:
-                return i
+        results = self.store.lookup(self._encode_keys(keys))
+        results = np.asarray(results, dtype=bool)
 
-        return len(lookup_results)
+        missing = np.flatnonzero(~results)
+        if missing.size:
+            return int(missing[0])
+
+        return int(results.size)
 
     def clear(self) -> None:
         if self.tp_rank != 0:
