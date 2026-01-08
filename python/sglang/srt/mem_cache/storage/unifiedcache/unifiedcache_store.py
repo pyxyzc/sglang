@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 UCM_META_BYTES: bytes | None = None
 UCM_SEED_HASH = "UCM_HASH_SEED"
 
+
 def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
     if UCM_META_BYTES is None:
         raise RuntimeError(
@@ -46,6 +47,7 @@ def uc_get_hash_str(token_ids: List[int], prior_hash: str = None) -> str:
 
     return hasher.hexdigest()
 
+
 def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
 
     cfg_path = os.environ.get("UNIFIEDCACHE_CONFIG_FILE")
@@ -64,13 +66,6 @@ def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
             f"UNIFIEDCACHE_CONFIG_FILE YAML root must be a dict, got {type(data)}"
         )
     return data
-
-@dataclass
-class BatchMeta:
-    keys: List[str]
-    offsets: List[int]
-    ptrs: List[int]
-    elem_sizes: List[int]
 
 
 @dataclass
@@ -99,7 +94,7 @@ class UnifiedCacheStoreConfig:
         is_mla_model = storage_config.is_mla_model
 
         page_size = mem_pool_host.page_size
-        #    self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2 for MHA, 
+        #    self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize * 2 for MHA,
         # or self.head_dim * self.head_num * self.layer_num * self.dtype.itemsize     for MLA.
         element_size = mem_pool_host.get_size_per_token()
         layer_num = mem_pool_host.device_pool.layer_num
@@ -111,18 +106,22 @@ class UnifiedCacheStoreConfig:
 
         # tensor_size: per-layer, per-page bytes for a single K tensor (MHA) or
         #             the single MLA tensor.
-        #    page_size * self.head_dim * self.head_num * self.dtype.itemsize * 2 for MHA, 
+        #    page_size * self.head_dim * self.head_num * self.dtype.itemsize * 2 for MHA,
         # or page_size * self.head_dim * self.head_num * self.dtype.itemsize     for MLA.
-        per_layer_page_bytes = cfg_base // layer_num
+        page_bytes = cfg_base
         # page_size * self.head_dim * self.head_num * self.dtype.itemsize
-        tensor_size = per_layer_page_bytes if is_mla_model else per_layer_page_bytes // 2
+        tensor_size = page_bytes if is_mla_model else page_bytes // 2
         # block_size/shard_size: bytes for a full block across all layers.
         block_size = tensor_size * layer_num * (1 if is_mla_model else 2)
 
         if ucm_cfg is None:
-            raise ValueError("kv_connector_extra_config['ucm_connector_config'] is missing")
+            raise ValueError(
+                "kv_connector_extra_config['ucm_connector_config'] is missing"
+            )
         if name is None:
-            raise ValueError("kv_connector_extra_config['ucm_connector_name'] is missing")
+            raise ValueError(
+                "kv_connector_extra_config['ucm_connector_name'] is missing"
+            )
 
         cfg = dict(ucm_cfg)
         cfg["storage_backends"] = [
@@ -172,50 +171,14 @@ class UnifiedCacheStore(HiCacheStorage):
     def register_uc_hasher(self):
         global UCM_META_BYTES
 
-        meta = f"{self.tp_size}:{self.dtype}:{self.tp_rank}"
+        meta = f"{self.model}:{self.tp_size}:{self.dtype}:{self.tp_rank}"
         UCM_META_BYTES = meta.encode("utf-8")
 
     def register_mem_pool_host(self, mem_pool_host: HostKVCache):
         super().register_mem_pool_host(mem_pool_host)
 
-    def _get_page_offsets(
-        self, keys: List[str], elem_size: int
-    ) -> List[int] | Tuple[List[int], List[int]]:
-        if self.is_mla:
-            return [0] * len(keys)
-
-        k_offset_list: List[int] = []
-        v_offset_list: List[int] = []
-        v_offset = self.tp_size * elem_size
-        for _ in keys:
-            k_offset_list.append(self.tp_rank * elem_size)
-            v_offset_list.append(self.tp_rank * elem_size + v_offset)
-
-        return (k_offset_list, v_offset_list)
-
-    def _generate_task(
-        self, keys: List[str], host_indices: torch.Tensor
-    ) -> BatchMeta | Tuple[BatchMeta, BatchMeta]:
-        ptr_list, elem_size_list = self.mem_pool_host.get_page_buffer_meta(host_indices)
-        elem_size = elem_size_list[0]
-
-        if self.is_mla:
-            offset_list = self._get_page_offsets(keys, elem_size)
-        else:
-            k_offset_list, v_offset_list = self._get_page_offsets(keys, elem_size)
-
-            k_ptr_list = ptr_list[0::2]
-            v_ptr_list = ptr_list[1::2]
-            k_elem_size_list = elem_size_list[0::2]
-            v_elem_size_list = elem_size_list[1::2]
-
-        if self.is_mla:
-            k_meta = BatchMeta(keys, offset_list, ptr_list, elem_size_list)
-            return k_meta
-
-        k_meta = BatchMeta(keys, k_offset_list, k_ptr_list, k_elem_size_list)
-        v_meta = BatchMeta(keys, v_offset_list, v_ptr_list, v_elem_size_list)
-        return (k_meta, v_meta)
+    def _encode_keys(self, keys: List[str]) -> List[bytes]:
+        return [key.encode("utf-8") for key in keys]
 
     def batch_get_v1(
         self,
@@ -227,30 +190,24 @@ class UnifiedCacheStore(HiCacheStorage):
         Retrieve values for multiple keys.
         Returns a list of tensors or None for each key.
         """
-        if self.is_mla:
-            k_meta = self._generate_task(keys, host_indices)
+        key_list = self._encode_keys(keys)
+        shard_index_list = [0] * len(key_list)
+        ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
+
+        if not self.is_mla:
+            ptr_list = [ptr_list[i : i + 2] for i in range(0, len(ptr_list), 2)]
         else:
-            k_meta, v_meta = self._generate_task(keys, host_indices)
+            ptr_list = [[ptr] * 2 for ptr in ptr_list]
 
-        task: Task | None = None
+        task = self.store.load_data(key_list, shard_index_list, ptr_list)
 
-        if self.is_mla:
-            task = self.store.fetch_data(
-                k_meta.keys,
-                k_meta.offsets,
-                k_meta.ptrs,
-                k_meta.elem_sizes
-            )
-        else:
-            task = self.store.fetch_data(
-                k_meta.keys + v_meta.keys,
-                k_meta.offsets + v_meta.offsets,
-                k_meta.ptrs + v_meta.ptrs,
-                k_meta.elem_sizes + v_meta.elem_sizes,
-            )
+        try:
+            self.store.wait(task)
+        except RuntimeError as e:
+            logger.error(f"UnifiedCache load KVCache failed: {e}")
+            return [False] * len(keys)
 
-        result = self.store.wait(task) == 0
-        return [result] * len(keys)
+        return [True] * len(keys)
 
     def batch_set_v1(
         self,
@@ -262,35 +219,23 @@ class UnifiedCacheStore(HiCacheStorage):
         Retrieve values for multiple keys.
         Returns a list of tensors or None for each key.
         """
-        if self.is_mla:
-            k_meta = self._generate_task(keys, host_indices)
-        else:
-            k_meta, v_meta = self._generate_task(keys, host_indices)
+        key_list = self._encode_keys(keys)
+        shard_index_list = [0] * len(key_list)
+        ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
 
-        result = self.store.create(keys)
-        if any(result) == True:
+        if not self.is_mla:
+            ptr_list = [ptr_list[i : i + 2] for i in range(0, len(ptr_list), 2)]
+        else:
+            ptr_list = [[ptr] * 2 for ptr in ptr_list]
+
+        task = self.store.dump_data(key_list, shard_index_list, ptr_list)
+        try:
+            self.store.wait(task)
+        except RuntimeError as e:
+            logger.error(f"UnifiedCache dump KVCache failed: {e}")
             return [False] * len(keys)
 
-        task: Task | None = None
-
-        if self.is_mla:
-            task = self.store.dump_data(
-                k_meta.keys,
-                k_meta.offsets,
-                k_meta.ptrs,
-                k_meta.elem_sizes
-            )
-        else:
-            task = self.store.dump_data(
-                k_meta.keys + v_meta.keys,
-                k_meta.offsets + v_meta.offsets,
-                k_meta.ptrs + v_meta.ptrs,
-                k_meta.elem_sizes + v_meta.elem_sizes,
-            )
-
-        result = self.store.wait(task) == 0
-        self.store.commit(keys, result)
-        return [result] * len(keys)
+        return [True] * len(keys)
 
     def get(
         self,
@@ -347,7 +292,7 @@ class UnifiedCacheStore(HiCacheStorage):
         Check if the key exists in the storage.
         Returns True if the key exists, False otherwise.
         """
-        exist_result = self.store.lookup([key])
+        exist_result = self.store.lookup([key.encode("utf-8")])
         return exist_result[0] == 1
 
     def batch_exists(
@@ -358,7 +303,7 @@ class UnifiedCacheStore(HiCacheStorage):
         return the number of consecutive existing keys from the start.
         Can be overridden by subclasses for more efficient implementation.
         """
-        lookup_results = self.store.lookup(keys)
+        lookup_results = self.store.lookup(self._encode_keys(keys))
         for i in range(len(lookup_results)):
             if not lookup_results[i]:
                 return i
