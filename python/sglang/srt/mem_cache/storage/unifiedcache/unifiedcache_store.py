@@ -293,8 +293,8 @@ class UnifiedCacheStore(HiCacheStorage):
         Check if the key exists in the storage.
         Returns True if the key exists, False otherwise.
         """
-        exist_result = self.store.lookup([key.encode("utf-8")])
-        return exist_result[0] == 1
+        result = self.store.lookup(self._encode_keys([key]))
+        return result[0] == 1
 
     def batch_exists(
         self, keys: List[str], extra_info: Optional[HiCacheStorageExtraInfo] = None
@@ -305,13 +305,10 @@ class UnifiedCacheStore(HiCacheStorage):
         Can be overridden by subclasses for more efficient implementation.
         """
         results = self.store.lookup(self._encode_keys(keys))
-        results = np.asarray(results, dtype=bool)
-
-        missing = np.flatnonzero(~results)
-        if missing.size:
-            return int(missing[0])
-
-        return int(results.size)
+        idx = np.where(~results)[0]
+        if len(idx) == 0:
+            return results.shape[0]
+        return int(idx[0])
 
     def clear(self) -> None:
         if self.tp_rank != 0:
