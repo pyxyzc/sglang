@@ -109,11 +109,11 @@ class UnifiedCacheStoreConfig:
         #             the single MLA tensor.
         #    page_size * self.head_dim * self.head_num * self.dtype.itemsize * 2 for MHA,
         # or page_size * self.head_dim * self.head_num * self.dtype.itemsize     for MLA.
-        page_bytes = cfg_base // layer_num
+        page_bytes = cfg_base
         # page_size * self.head_dim * self.head_num * self.dtype.itemsize
         tensor_size = page_bytes if is_mla_model else page_bytes // 2
         # block_size/shard_size: bytes for a full block across all layers.
-        block_size = tensor_size * layer_num * (1 if is_mla_model else 2)
+        block_size = tensor_size * (1 if is_mla_model else 2)
 
         if ucm_cfg is None:
             raise ValueError(
