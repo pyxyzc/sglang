@@ -34,17 +34,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.connector = SglangUcmConnector.from_hicache(
                 storage_config, mem_pool_host
             )
-
             self.store = self.connector.store
-            self.mem_pool_host = mem_pool_host
-            self.dtype = mem_pool_host.dtype
-
-            self.is_mla = storage_config.is_mla_model
-            self.cache_nums = 1 if self.is_mla else 2
-            self.tp_rank = storage_config.tp_rank
-            self.tp_size = storage_config.tp_size
-            self.storage_backend = self.connector.storage_backends
-            self.model = storage_config.model_name
         except ValueError as e:
             logger.error(f"Invalid UnifiedCacheStoreConfig: {e}")
             raise
@@ -142,7 +132,7 @@ class UnifiedCacheStore(HiCacheStorage):
         return self.connector.batch_exists(keys, extra_info)
 
     def clear(self) -> bool:
-        return self.connector.clear()
+        pass
 
     def get_stats(self):
         return None
