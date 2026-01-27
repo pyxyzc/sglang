@@ -30,7 +30,11 @@ class UnifiedCacheStore(HiCacheStorage):
     ):
         try:
             assert mem_pool_host is not None
-
+            logger.info(
+                "UnifiedCacheStore expects hicache mem layout 'page_first'; current layout=%s",
+                mem_pool_host.layout,
+            )
+            assert mem_pool_host.layout == "page_first"
             self.connector = SglangUcmConnector.from_hicache(
                 storage_config, mem_pool_host
             )

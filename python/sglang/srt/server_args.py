@@ -1501,10 +1501,6 @@ class ServerArgs:
                     "Page first direct layout only support direct io backend"
                 )
 
-        if self.hicache_storage_backend == "unifiedcache":
-            self.hicache_mem_layout = "page_first"
-
-
         if self.enable_hierarchical_cache and self.hicache_io_backend == "kernel":
             # fix for the compatibility issue with FlashAttention3 decoding and HiCache kernel backend
             if self.decode_attention_backend is None:
