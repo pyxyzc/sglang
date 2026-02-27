@@ -302,6 +302,18 @@ async def flush_cache():
     return Response(status_code=200)
 
 
+@app.post("/flush_hbm")
+async def flush_hbm():
+    async with aiohttp.ClientSession() as session:
+        # Create the tasks
+        tasks = []
+        for server in chain(lb.prefill_urls, lb.decode_urls):
+            tasks.append(session.post(f"{server}/flush_hbm"))
+        for i, response in enumerate(asyncio.as_completed(tasks)):
+            await response
+    return Response(status_code=200)
+
+
 @app.get("/get_server_info")
 async def get_server_info():
     prefill_infos = []

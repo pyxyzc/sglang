@@ -63,6 +63,7 @@ class HostKVCache(abc.ABC):
             self.size = int(host_size * 1e9 // self.size_per_token)
         else:
             self.size = int(device_pool.size * host_to_device_ratio)
+            logger.info(f"set host memory size according to device memeory size {device_pool.size} (tokens) and host2device ratio {host_to_device_ratio}: {self.size} (tokens).")
         # Align the host memory pool size to the page size
         self.size = self.size - (self.size % self.page_size)
         self.page_num = self.size // self.page_size

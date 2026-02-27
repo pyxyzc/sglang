@@ -382,6 +382,9 @@ class Engine(EngineBase):
     def flush_cache(self):
         return self.loop.run_until_complete(self.tokenizer_manager.flush_cache())
 
+    def flush_hbm(self):
+        return self.loop.run_until_complete(self.tokenizer_manager.flush_hbm())
+
     def start_profile(self, **kwargs):
         self.loop.run_until_complete(self.tokenizer_manager.start_profile(**kwargs))
 

@@ -79,6 +79,8 @@ from sglang.srt.managers.io_struct import (
     ExpertDistributionReqType,
     FlushCacheReqInput,
     FlushCacheReqOutput,
+    FlushHBMReqInput,
+    FlushHBMReqOutput,
     FreezeGCReq,
     GetInternalStateReq,
     GetInternalStateReqOutput,
@@ -531,6 +533,7 @@ class Scheduler(
                 (BatchTokenizedGenerateReqInput, self.handle_batch_generate_request),
                 (BatchTokenizedEmbeddingReqInput, self.handle_batch_embedding_request),
                 (FlushCacheReqInput, self.flush_cache_wrapped),
+                (FlushHBMReqInput, self.flush_hbm_wrapped),
                 (ClearHiCacheReqInput, self.clear_hicache_storage_wrapped),
                 (AbortReq, self.abort_request),
                 (OpenSessionReqInput, self.open_session),
@@ -2315,6 +2318,10 @@ class Scheduler(
         success = self.flush_cache()
         return FlushCacheReqOutput(success=success)
 
+    def flush_hbm_wrapped(self, recv_req: FlushHBMReqInput):
+        success = self.flush_hbm()
+        return FlushHBMReqOutput(success=success)
+
     def clear_hicache_storage_wrapped(self, recv_req: ClearHiCacheReqInput):
         if self.enable_hierarchical_cache:
             self.tree_cache.clear_storage_backend()
@@ -2372,6 +2379,39 @@ class Scheduler(
         else:
             logging.warning(
                 f"Cache not flushed because there are pending requests. "
+                f"#queue-req: {len(self.waiting_queue)}, "
+                f"#running-req: {len(self.running_batch.reqs)}"
+            )
+            if_success = False
+        return if_success
+
+    def flush_hbm(self):
+        """Flush the device KV cache while preserving hierarchical host cache."""
+        if self._is_no_request():
+            self.cur_batch = None
+            self.last_batch = None
+
+            if isinstance(self.tree_cache, HiRadixCache):
+                if_success = self.tree_cache.flush_device_cache()
+                if if_success:
+                    self.req_to_token_pool.clear()
+                    if self.draft_worker:
+                        self.draft_worker.clear_cache_pool()
+                    torch.cuda.empty_cache()
+                    logger.info("HBM cache flushed successfully!")
+                else:
+                    logger.warning(
+                        "HBM cache flush failed. "
+                        "Please check host cache capacity and backend logs."
+                    )
+            else:
+                logging.warning(
+                    "HBM cache flush requires hierarchical cache (HiCache) to be enabled."
+                )
+                if_success = False
+        else:
+            logging.warning(
+                f"HBM cache not flushed because there are pending requests. "
                 f"#queue-req: {len(self.waiting_queue)}, "
                 f"#running-req: {len(self.running_batch.reqs)}"
             )

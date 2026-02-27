@@ -624,6 +624,17 @@ async def flush_cache():
     )
 
 
+@app.api_route("/flush_hbm", methods=["GET", "POST"])
+async def flush_hbm():
+    """Flush device KV cache while preserving hierarchical host cache."""
+    ret = await _global_state.tokenizer_manager.flush_hbm()
+    return Response(
+        content="HBM cache flushed.\nPlease check backend logs for more details. "
+        "(When there are running or waiting requests, the operation will not be performed.)\n",
+        status_code=200 if ret.success else HTTPStatus.BAD_REQUEST,
+    )
+
+
 @app.api_route("/clear_hicache_storage_backend", methods=["GET", "POST"])
 async def clear_hicache_storage_backend():
     """Clear the hierarchical cache storage backend."""

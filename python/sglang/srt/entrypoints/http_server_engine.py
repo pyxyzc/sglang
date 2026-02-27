@@ -134,3 +134,6 @@ class HttpServerEngineAdapter(EngineBase):
 
     def flush_cache(self):
         return self._make_request("flush_cache")
+
+    def flush_hbm(self):
+        return self._make_request("flush_hbm")

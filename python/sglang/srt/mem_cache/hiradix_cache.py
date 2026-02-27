@@ -198,6 +198,69 @@ class HiRadixCache(RadixCache):
         self.token_to_kv_pool_host.clear()
         super().reset()
 
+    def flush_device_cache(self) -> bool:
+        """Flush device KV cache while keeping host-backed radix entries."""
+        if self.disable:
+            return True
+
+        # No in-flight requests should exist when this is called, but prefetch tasks
+        # may still be running asynchronously.
+        for rid in list(self.ongoing_prefetch.keys()):
+            self.release_aborted_request(rid)
+        if self.enable_storage:
+            self.drain_storage_control_queues()
+
+        # Drain outstanding async write/load operations and release corresponding
+        # lock refs before eviction.
+        while len(self.ongoing_write_through) > 0:
+            if len(self.cache_controller.ack_write_queue) == 0:
+                logger.warning(
+                    "Cannot flush device cache: pending write-through entries exist "
+                    "without ACK events."
+                )
+                return False
+            self.cache_controller.ack_write_queue[0].finish_event.synchronize()
+            self.writing_check()
+
+        while len(self.ongoing_load_back) > 0:
+            if len(self.cache_controller.ack_load_queue) == 0:
+                logger.warning(
+                    "Cannot flush device cache: pending load-back entries exist "
+                    "without ACK events."
+                )
+                return False
+            self.cache_controller.ack_load_queue[0].finish_event.synchronize()
+            self.loading_check()
+
+        original_write_policy = self.cache_controller.write_policy
+        self.cache_controller.write_policy = "write_back"
+        try:
+            while self.evictable_size_ > 0:
+                prev_evictable_size = self.evictable_size_
+                self.evict(prev_evictable_size)
+                if self.evictable_size_ >= prev_evictable_size:
+                    logger.warning(
+                        "Failed to flush all device KV cache. "
+                        "Host memory might be insufficient. "
+                        f"remaining_device_tokens={self.evictable_size_}"
+                    )
+                    return False
+        finally:
+            self.cache_controller.write_policy = original_write_policy
+
+        if self.protected_size_ > 0:
+            logger.warning(
+                "Failed to flush all device KV cache due to protected nodes. "
+                f"remaining_device_tokens={self.protected_size_}"
+            )
+            return False
+
+        # Keep allocator state aligned with the fully-evicted radix tree.
+        self.token_to_kv_pool_allocator.clear()
+        if self.enable_storage:
+            self.drain_storage_control_queues()
+        return True
+
     def get_height(self, node: TreeNode):
         height = 0
         while node != self.root_node:

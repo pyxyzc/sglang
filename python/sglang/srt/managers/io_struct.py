@@ -1065,6 +1065,16 @@ class FlushCacheReqOutput(BaseReq):
 
 
 @dataclass
+class FlushHBMReqInput(BaseReq):
+    pass
+
+
+@dataclass
+class FlushHBMReqOutput(BaseReq):
+    success: bool
+
+
+@dataclass
 class UpdateWeightFromDiskReqInput(BaseReq):
     # The model path with the new weights
     model_path: str
