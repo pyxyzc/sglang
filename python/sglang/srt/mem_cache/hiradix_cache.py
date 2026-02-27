@@ -125,6 +125,8 @@ class HiRadixCache(RadixCache):
         self.ongoing_load_back = {}
         # record the ongoing prefetch requests
         self.ongoing_prefetch = {}
+        # record storage-prefetched tokens by request id (subset of host hits)
+        self.prefetched_storage_hit_tokens = {}
         self.ongoing_backup = {}
         # todo: dynamically adjust the threshold
         self.write_through_threshold = (
@@ -196,6 +198,7 @@ class HiRadixCache(RadixCache):
         TreeNode.counter = 0
         self.cache_controller.reset()
         self.token_to_kv_pool_host.clear()
+        self.prefetched_storage_hit_tokens.clear()
         super().reset()
 
     def flush_device_cache(self) -> bool:
@@ -207,6 +210,7 @@ class HiRadixCache(RadixCache):
         # may still be running asynchronously.
         for rid in list(self.ongoing_prefetch.keys()):
             self.release_aborted_request(rid)
+        self.prefetched_storage_hit_tokens.clear()
         if self.enable_storage:
             self.drain_storage_control_queues()
 
@@ -722,6 +726,11 @@ class HiRadixCache(RadixCache):
         self.cache_controller.append_host_mem_release(
             host_indices[min_completed_tokens:completed_tokens]
         )
+        storage_hit_tokens = max(min_completed_tokens - matched_length, 0)
+        if storage_hit_tokens > 0:
+            self.prefetched_storage_hit_tokens[req_id] = (
+                self.prefetched_storage_hit_tokens.get(req_id, 0) + storage_hit_tokens
+            )
         last_host_node.release_host()
         del self.ongoing_prefetch[req_id]
         self.cache_controller.prefetch_tokens_occupied -= len(token_ids)
@@ -997,10 +1006,12 @@ class HiRadixCache(RadixCache):
 
     def release_aborted_request(self, rid: str):
         if rid not in self.ongoing_prefetch:
+            self.prefetched_storage_hit_tokens.pop(rid, None)
             return
 
         last_host_node, token_ids, host_indices, operation = self.ongoing_prefetch[rid]
         if operation.host_indices is None:
+            self.prefetched_storage_hit_tokens.pop(rid, None)
             return
 
         completed_tokens, _ = self.cache_controller.terminate_prefetch(operation)
@@ -1008,5 +1019,9 @@ class HiRadixCache(RadixCache):
             torch.distributed.barrier(group=self.tp_group)
         last_host_node.release_host()
         del self.ongoing_prefetch[rid]
+        self.prefetched_storage_hit_tokens.pop(rid, None)
         self.cache_controller.append_host_mem_release(host_indices[:completed_tokens])
         self.cache_controller.prefetch_tokens_occupied -= len(token_ids)
+
+    def consume_prefetched_storage_hit_tokens(self, rid: str) -> int:
+        return self.prefetched_storage_hit_tokens.pop(rid, 0)

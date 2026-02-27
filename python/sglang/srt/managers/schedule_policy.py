@@ -344,6 +344,8 @@ class PrefillAdder:
         self.preempt_list = []
         self.new_chunked_req = None
         self.log_hit_tokens = 0
+        self.log_host_hit_tokens = 0
+        self.log_storage_hit_tokens = 0
         # TODO(lsyin): report the real input tokens excluding page alignment
         self.log_input_tokens = 0
 
@@ -432,7 +434,12 @@ class PrefillAdder:
         return AddReqResult.CONTINUE
 
     def _update_prefill_budget(
-        self, prefix_len: int, extend_input_len: int, max_new_tokens: int
+        self,
+        prefix_len: int,
+        extend_input_len: int,
+        max_new_tokens: int,
+        host_hit_tokens: int = 0,
+        storage_hit_tokens: int = 0,
     ):
         # TODO(lsyin): check this workaround logic, which only ensures the prefill will not out of memory, and may be too conservative
         extend_input_len = self.ceil_paged_tokens(extend_input_len)
@@ -444,6 +451,8 @@ class PrefillAdder:
             self.rem_chunk_tokens -= extend_input_len
 
         self.log_hit_tokens += prefix_len
+        self.log_host_hit_tokens += host_hit_tokens
+        self.log_storage_hit_tokens += storage_hit_tokens
         self.log_input_tokens += extend_input_len
 
     def add_chunked_req(self, req: Req):
@@ -589,10 +598,18 @@ class PrefillAdder:
             if total_tokens >= self.rem_total_tokens:
                 return AddReqResult.NO_TOKEN
 
+            loaded_host_hit_tokens = 0
+            loaded_storage_hit_tokens = 0
             if req.host_hit_length > 0:
                 new_indices, req.last_node = self.tree_cache.init_load_back(
                     req.last_host_node, req.host_hit_length
                 )
+                loaded_host_hit_tokens = len(new_indices)
+                if loaded_host_hit_tokens > 0 and req.prefetched_storage_hit_tokens > 0:
+                    loaded_storage_hit_tokens = min(
+                        loaded_host_hit_tokens, req.prefetched_storage_hit_tokens
+                    )
+                    req.prefetched_storage_hit_tokens -= loaded_storage_hit_tokens
                 req.prefix_indices = torch.cat([req.prefix_indices, new_indices])
                 req.extend_input_len = len(req.fill_ids) - len(req.prefix_indices)
                 prefix_len = len(req.prefix_indices)
@@ -618,6 +635,8 @@ class PrefillAdder:
                         req.sampling_params.max_new_tokens,
                         CLIP_MAX_NEW_TOKENS,
                     ),
+                    host_hit_tokens=loaded_host_hit_tokens,
+                    storage_hit_tokens=loaded_storage_hit_tokens,
                 )
             else:
                 # Make sure at least one page is available
@@ -647,7 +666,13 @@ class PrefillAdder:
                     req.swa_uuid_for_lock = swa_uuid_for_lock
                 else:
                     self.tree_cache.inc_lock_ref(req.last_node)
-                self._update_prefill_budget(prefix_len, trunc_len, 0)
+                self._update_prefill_budget(
+                    prefix_len,
+                    trunc_len,
+                    0,
+                    host_hit_tokens=loaded_host_hit_tokens,
+                    storage_hit_tokens=loaded_storage_hit_tokens,
+                )
 
         return self.budget_state()
 

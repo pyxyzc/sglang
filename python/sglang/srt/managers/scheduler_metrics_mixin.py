@@ -133,12 +133,19 @@ class SchedulerMetricsMixin:
             token_usage_msg = f"token usage: {token_usage:.2f}, "
 
         iter_msg = f" [{self.forward_ct + 1}]" if LOG_FORWARD_ITERS else ""
+        host_total_hit_tokens = adder.log_host_hit_tokens
+        storage_hit_tokens = min(adder.log_storage_hit_tokens, host_total_hit_tokens)
+        host_hit_tokens = max(host_total_hit_tokens - storage_hit_tokens, 0)
+        device_hit_tokens = max(adder.log_hit_tokens - host_total_hit_tokens, 0)
 
         f = (
             f"Prefill batch{iter_msg}, "
             f"#new-seq: {len(can_run_list)}, "
             f"#new-token: {adder.log_input_tokens}, "
             f"#cached-token: {adder.log_hit_tokens}, "
+            f"#device-cached-token: {device_hit_tokens}, "
+            f"#host-cached-token: {host_hit_tokens}, "
+            f"#storage-cached-token: {storage_hit_tokens}, "
             f"{token_usage_msg}"
             f"#running-req: {running_bs}, "
             f"#queue-req: {len(self.waiting_queue)}, "

@@ -553,6 +553,9 @@ class Req:
         self.last_node: Any = None
         self.last_host_node: Any = None
         self.host_hit_length = 0
+        # Tokens prefetched from storage backend (L3/disk) for this request.
+        # This value is consumed when the request enters prefill scheduling.
+        self.prefetched_storage_hit_tokens = 0
         # The node to lock until for swa radix tree lock ref
         self.swa_uuid_for_lock: Optional[int] = None
         # The prefix length of the last prefix matching

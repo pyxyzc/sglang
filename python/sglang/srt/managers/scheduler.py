@@ -1797,6 +1797,10 @@ class Scheduler(
                 if not prefetch_done:
                     # skip staging requests that are ongoing prefetch
                     continue
+                if hasattr(self.tree_cache, "consume_prefetched_storage_hit_tokens"):
+                    req.prefetched_storage_hit_tokens += (
+                        self.tree_cache.consume_prefetched_storage_hit_tokens(req.rid)
+                    )
 
             req.init_next_round_input(self.tree_cache)
             res = adder.add_one_req(
