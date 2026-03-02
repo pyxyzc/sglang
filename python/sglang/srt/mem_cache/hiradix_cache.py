@@ -206,14 +206,6 @@ class HiRadixCache(RadixCache):
         if self.disable:
             return True
 
-        # No in-flight requests should exist when this is called, but prefetch tasks
-        # may still be running asynchronously.
-        for rid in list(self.ongoing_prefetch.keys()):
-            self.release_aborted_request(rid)
-        self.prefetched_storage_hit_tokens.clear()
-        if self.enable_storage:
-            self.drain_storage_control_queues()
-
         # Drain outstanding async write/load operations and release corresponding
         # lock refs before eviction.
         while len(self.ongoing_write_through) > 0:
