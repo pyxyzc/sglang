@@ -1735,6 +1735,36 @@ class ModelRunner(ModelRunnerKVCacheMixin):
             self.attn_backend = TboAttnBackend.init_new(self._get_attention_backend)
         else:
             self.attn_backend = self._get_attention_backend()
+        self._log_attention_backend()
+
+    def _log_attention_backend(self):
+        backend = self.attn_backend
+        backend_cls = type(backend).__name__
+
+        if hasattr(backend, "prefill_backend") and hasattr(backend, "decode_backend"):
+            logger.info(
+                "Initialized attention backend instance: %s "
+                "(prefill=%s -> %s, decode=%s -> %s)",
+                backend_cls,
+                self.prefill_attention_backend_str,
+                type(backend.prefill_backend).__name__,
+                self.decode_attention_backend_str,
+                type(backend.decode_backend).__name__,
+            )
+            return
+
+        backend_name = (
+            self.server_args.speculative_draft_attention_backend
+            if self.is_draft_worker
+            and self.server_args.speculative_draft_attention_backend
+            else getattr(self, "prefill_attention_backend_str", None)
+            or self.server_args.attention_backend
+        )
+        logger.info(
+            "Initialized attention backend instance: %s -> %s",
+            backend_name,
+            backend_cls,
+        )
 
     def _get_attention_backend(self, init_new_workspace: bool = False):
         """Init attention kernel backend."""
