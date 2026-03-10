@@ -1523,6 +1523,15 @@ class HybridLinearAttnBackend(AttentionBackend):
         self.full_attn_backend = full_attn_backend
         self.linear_attn_backend = linear_attn_backend
         self.attn_backend_list = [full_attn_backend, linear_attn_backend]
+        logger.info(
+            "HybridLinearAttnBackend initialized: full_attn_backend=%s (%r), "
+            "linear_attn_backend=%s (%r), full_attn_layers=%s",
+            type(full_attn_backend).__name__,
+            full_attn_backend,
+            type(linear_attn_backend).__name__,
+            linear_attn_backend,
+            full_attn_layers,
+        )
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         for attn_backend in self.attn_backend_list:
